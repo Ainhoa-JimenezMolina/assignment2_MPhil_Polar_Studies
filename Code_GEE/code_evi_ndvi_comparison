@@ -1,0 +1,229 @@
+// CODE FOR NDVI-EVI COMPARISON
+// AINHOA JIMENEZ. JANUARY 2025
+
+
+
+//--------------------------------------------------
+/// 1. define the area I am going to be working with
+//--------------------------------------------------
+
+var WestGreendland = ee.Geometry.Rectangle({ // creates a rectangular geometric region called Arctic using Google Earth Engine's (GEE) ee.Geometry.Rectangle function. 
+ coords: [-73, 59, -20, 82.5],  //The coords parameter specifies the bounds of the rectangle in the format [west, south, east, north]:
+ geodesic: false //The geodesic parameter determines whether the rectangle should follow the Earth's curvaturE--> FALSE= NO-->for small scale maping--> curvature doesn't make a difference
+});
+
+
+///----------------------
+/// GENRATE SAMPLE POINTS
+///----------------------
+
+var boundary = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017');
+var styleParams = {
+  fillColor: 'b5ffb4',
+  color: '00909F',
+  width: 3,
+};
+
+// Filter the collection to find Greenland
+var greenland = boundary.filter(ee.Filter.eq('country_co', 'GL'));
+
+//Generate a random points
+
+var samplePoints = ee.FeatureCollection.randomPoints({
+  region: greenland, 
+  points: 10000,
+  seed: 1
+});
+
+// Define the bounding box for West Greenland
+
+var samplePoints = samplePoints.filterBounds(WestGreenland);
+print('samplePoints',samplePoints)
+
+Map.centerObject(WestGreenland, 4)
+Map.addLayer(samplePoints, {color: 'red'}, 'Random Sample Points')
+  
+//--------------------
+/// 2. call the data
+//--------------------
+
+var dataSentinel = ee.ImageCollection("COPERNICUS/S2_HARMONIZED") // Include sentinel data 1C--> TOP OF ATMOSPHERE REFLECTANCE VALUES
+  // filter image collection spatially
+.filterBounds(WestGreendland)
+  //filter collection temporally
+.filterDate('2015-06-24', '2024-12-22')//first day deployed, and last day before analysis
+  //filter for growing season - May to September
+.filter(ee.Filter.calendarRange(5, 9, 'month')); // Filter by months (May to September)
+
+
+//------------------------------------------------------------
+//3. Do a quality control using Cloud Score+ image collection. 
+//------------------------------------------------------------
+
+  //Note Cloud Score+ is produced from Sentinel-2 Level 1C data and can be applied to either L1C or L2A collections.
+var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+
+  // Use 'cs':how similar is this pixel to what we'd expect to see in a perfectly a clear reference
+var QA_BAND = 'cs';
+
+  // The threshold for masking; values between 0.50 and 0.65 generally work well.
+  // Higher values will remove thin clouds, haze & cirrus shadows.
+var CLEAR_THRESHOLD = 0.60;
+
+  // Make a clear collection.
+var dataSentinelClear = dataSentinel
+.linkCollection(csPlus, [QA_BAND])
+    .map(function(img) {
+      return img.updateMask(img.select(QA_BAND).gte(CLEAR_THRESHOLD));
+    })
+print(dataSentinelClear.filterDate('2017-06-24', '2017-07-22').filterBounds(samplePoints))
+
+//---------------------------------------------------
+/// 4.  Set time-frame of interest (all available data)
+//---------------------------------------------------
+
+var start = ee.Date('2015-06-24');
+var end = ee.Date('2024-12-22'); 
+
+ // Create a sequence of years for map
+var years = ee.List.sequence(start.get('year'), end.get('year'));
+
+
+
+//---------------------------------------
+///5. Check whether is better EVI or NDVI
+//---------------------------------------
+
+//--------------------------
+/// 5.1. Generate NDVI & EVI
+//--------------------------
+
+// Define functions to calculate NDVI and EVI
+function addIndices(image) {
+    var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+    var evi = image.expression(
+        '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 10000))', { //sentinel images are times 10000
+            'NIR': image.select('B8'),
+            'RED': image.select('B4'),
+            'BLUE': image.select('B2')
+        }).rename('EVI');
+    return image.addBands([ndvi, evi]);
+}
+
+var dataSentinelClearIndices = dataSentinelClear.map(addIndices);
+
+print('dataSentinel with inidces',dataSentinelClearIndices.filterDate('2017-06-24', '2017-07-22').filterBounds(samplePoints));
+
+var dataSentinelClearIndicesFiltered = dataSentinelClearIndices.filterBounds(samplePoints);
+
+var dataEVINDVIselect = ee.ImageCollection(dataSentinelClearIndicesFiltered.randomColumn('random',13).sort('random').limit(200));
+
+var dataEVINDVIselectBands = dataEVINDVIselect.map(function(img){
+  return img.select(['NDVI', 'EVI']);
+});
+
+var samplesEVINDVI = dataEVINDVIselectBands.map(function(img){
+  var samples = img.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+return samples
+}).flatten()
+
+print(dataEVINDVIselectBands,'dataEVINDVIselect');
+print(samplesEVINDVI, 'samplesEVINDVI')
+
+
+Export.table.toDrive({
+    collection: samplesEVINDVI,
+    description: 'data_compare_EVI_NDVI',
+    fileFormat: 'CSV'
+})
+
+// ----------------------
+// Repeat this 3 times
+// ----------------------
+
+var dataEVINDVIselect2 = ee.ImageCollection(dataSentinelClearIndicesFiltered.randomColumn('random',2).sort('random').limit(200));
+
+var dataEVINDVIselectBands2 = dataEVINDVIselect2.map(function(img){
+  return img.select(['NDVI', 'EVI']);
+});
+
+var samplesEVINDVI2 = dataEVINDVIselectBands2.map(function(img){
+  var samples = img.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+return samples
+}).flatten()
+
+print(dataEVINDVIselectBands2,'dataEVINDVIselect');
+print(samplesEVINDVI2, 'samplesEVINDVI')
+
+
+Export.table.toDrive({
+    collection: samplesEVINDVI2,
+    description: 'data_compare_EVI_NDVI2',
+    fileFormat: 'CSV'
+})
+
+// Again
+
+var dataEVINDVIselect3 = ee.ImageCollection(dataSentinelClearIndicesFiltered.randomColumn('random',3).sort('random').limit(200));
+
+var dataEVINDVIselectBands3 = dataEVINDVIselect3.map(function(img){
+  return img.select(['NDVI', 'EVI']);
+});
+
+var samplesEVINDVI3 = dataEVINDVIselectBands3.map(function(img){
+  var samples = img.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+return samples;
+}).flatten();
+
+print(dataEVINDVIselectBands3,'dataEVINDVIselect');
+print(samplesEVINDVI3, 'samplesEVINDVI');
+
+
+Export.table.toDrive({
+    collection: samplesEVINDVI3,
+    description: 'data_compare_EVI_NDVI3',
+    fileFormat: 'CSV'
+
+});
+
+// Again
+
+var dataEVINDVIselect4 = ee.ImageCollection(dataSentinelClearIndicesFiltered.randomColumn('random',4).sort('random').limit(200));
+
+var dataEVINDVIselectBands4 = dataEVINDVIselect4.map(function(img){
+  return img.select(['NDVI', 'EVI']);
+});
+
+var samplesEVINDVI4 = dataEVINDVIselectBands4.map(function(img){
+  var samples = img.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+return samples;
+}).flatten();
+
+print(dataEVINDVIselectBands4,'dataEVINDVIselect');
+print(samplesEVINDVI4, 'samplesEVINDVI');
+
+
+Export.table.toDrive({
+    collection: samplesEVINDVI4,
+    description: 'data_compare_EVI_NDVI4',
+    fileFormat: 'CSV'
+
+});
+
+
