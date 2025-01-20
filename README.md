@@ -4,6 +4,6 @@ This is the repository for the code and data of **"Exploring NDVI Trends in West
 
 Find the code for R in [Code R](Code_R)
 
-Find the code for GEE in [Code GEE]
+Find the code for GEE in [Code GEE](Code_GEE)
 
-Find the data exports for R in [Data for R](
+Find the data exports for R in [Data for R](data_r)
