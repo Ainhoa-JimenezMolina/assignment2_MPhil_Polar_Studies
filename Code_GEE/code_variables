@@ -1,0 +1,581 @@
+// CODE TO EXPORT ALL VARIABLES FOR THE CORRELATIONS
+// DOES NOT INCLUDE COMPARISONE EVI-NDVI
+// AINHOA JIMENEZ. JANUARY 2025
+
+//--------------------------------------------------.
+/// 1. define the area I am going to be working with
+//--------------------------------------------------
+var WestGreenland = 
+    /* color: #d63000 */
+    /* shown: false */
+    ee.Geometry.Polygon(
+        [[[-43.44643487474684, 60.97238032205222],
+          [-48.71987237474684, 62.713775448891894],
+          [-49.33510674974684, 69.5339939173805],
+          [-52.14760674974684, 72.81563119330336],
+          [-55.83901299974684, 74.89042517783281],
+          [-60.40932549974684, 76.63887948311763],
+          [-65.94643487474684, 76.76019807163368],
+          [-64.27651299974684, 77.61738786312402],
+          [-68.67104424974684, 78.04348477091041],
+          [-61.72768487474684, 79.44820311338907],
+          [-57.02465227955031, 80.58938563205581],
+          [-58.43090227955031, 81.14715948557831],
+          [-64.49535540455031, 81.33452976820514],
+          [-69.32933977955031, 80.05768918752935],
+          [-73.98754290455031, 78.22408708874605],
+          [-69.50512102955031, 75.84465810341766],
+          [-62.73754290455031, 75.8231483096346],
+          [-55.61840227955031, 69.47223662860904],
+          [-54.65160540455031, 66.23061620452862],
+          [-51.39965227955031, 62.592380037161625],
+          [-48.58715227955031, 60.28237378000799],
+          [-43.31371477955031, 59.21986594191639],
+          [-41.81957415455031, 60.019909162463094]]]),
+    geometry = 
+    /* color: #d63000 */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[-53.09179687499999, 66.00554109446598],
+          [-53.09179687499999, 64.94777388634816],
+          [-50.63085937499999, 64.94777388634816],
+          [-50.63085937499999, 66.00554109446598]]], null, false);
+
+var WestGreendland = ee.Geometry.Rectangle({ // creates a rectangular geometric region called Arctic using Google Earth Engine's (GEE) ee.Geometry.Rectangle function. 
+coords: [-73, 59, -20, 82.5],  //The coords parameter specifies the bounds of the rectangle in the format [west, south, east, north]:
+ geodesic: false //The geodesic parameter determines whether the rectangle should follow the Earth's curvaturE--> FALSE= NO-->for small scale maping--> curvature doesn't make a difference
+});
+
+
+  
+//--------------------
+/// 2. call the data
+//--------------------
+
+var dataSentinel = ee.ImageCollection("COPERNICUS/S2_HARMONIZED") // Include sentinel data 1C--> TOP OF ATMOSPHERE REFLECTANCE VALUES
+  // filter image collection spatially
+.filterBounds(WestGreendland)
+  //filter collection temporally
+.filterDate('2015-06-24', '2024-12-22')//first day deployed, and last day before analysis
+  //filter for growing season - May to September
+.filter(ee.Filter.calendarRange(5, 9, 'month')); // Filter by months (May to September)
+
+
+//------------------------------------------------------------
+//3. Do a quality control using Cloud Score+ image collection. 
+//------------------------------------------------------------
+
+  //Note Cloud Score+ is produced from Sentinel-2 Level 1C data and can be applied to either L1C or L2A collections.
+var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+
+  // Use 'cs':how similar is this pixel to what we'd expect to see in a perfectly a clear reference
+var QA_BAND = 'cs';
+
+  // The threshold for masking; values between 0.50 and 0.65 generally work well.
+  // Higher values will remove thin clouds, haze & cirrus shadows.
+var CLEAR_THRESHOLD = 0.60;
+
+  // Make a clear collection.
+var dataSentinelClear = dataSentinel
+.linkCollection(csPlus, [QA_BAND])
+    .map(function(img) {
+      return img.updateMask(img.select(QA_BAND).gte(CLEAR_THRESHOLD));
+    });
+
+///----------------------
+/// GENRATE SAMPLE POINTS
+///----------------------
+
+var boundary = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017');
+var styleParams = {
+  fillColor: 'b5ffb4',
+  color: '00909F',
+  width: 3,
+};
+
+// Filter the collection to find Greenland
+var greenland = boundary.filter(ee.Filter.eq('country_co', 'GL'));
+
+//Generate a random points
+
+var samplePoints = ee.FeatureCollection.randomPoints({
+  region: greenland, 
+  points: 8000});
+
+// Define the bounding box for West Greenland
+
+var samplePoints = samplePoints.filterBounds(WestGreenland);
+print('samplePoints',samplePoints)
+
+Map.centerObject(WestGreenland, 4)
+Map.addLayer(samplePoints, {color: 'red'}, 'Random Sample Points')
+
+// Print the feature to the console to inspect its properties
+print('Greenland Feature', greenland);
+
+
+Map.centerObject(greenland, 4); // Adjust the zoom level as needed
+Map.addLayer(greenland, {color: 'blue'}, 'Greenland');
+
+
+//---------------------------------------------------
+/// 4.  Set time-frame of interest (all available data)
+//---------------------------------------------------
+
+var start = ee.Date('2015-06-24');
+var end = ee.Date('2024-12-22'); 
+
+ // Create a sequence of years for map
+var years = ee.List.sequence(start.get('year'), end.get('year'));
+
+//---------------------------------------
+///5. Check whether is better EVI or NDVI
+//---------------------------------------
+
+//-------------------
+/// 5.1. Generate NDVI 
+//-------------------
+
+ // Generate funtion to create NDVI at 10 m resolution from the available bands
+var addNDVI = function(image) {
+  var NDVI = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  return image.addBands(NDVI);
+};
+
+////////////////////-------------------- NDVI--------------------/////////////////
+///--------------------------------------
+/// 6. Create annual composites with NDVI
+///--------------------------------------
+
+
+var sentinelAnnual = ee.ImageCollection.fromImages(
+  years.map(function (y) {
+
+    // Filter Sentinel-2 collection for the given year
+    return dataSentinelClear.filter(
+      ee.Filter.calendarRange(y, y, 'year'))
+     .map(addNDVI) // Apply the addNDVI function to each image
+     .max() // Create an annual max composite and set properties
+     .set('year', y)
+     .set('system:time_start', 
+        ee.Date(ee.Number(y).format('%d').cat('-01-01')));
+}));
+
+
+// Print to verify result
+
+//print('Sentinel Annual', sentinelAnnual);
+
+///---------------------------------------------------------------------------
+// 7. Prepare annual composites for regression analysis--> create time difference
+///---------------------------------------------------------------------------
+
+var sentinelWithTime = sentinelAnnual.map(function(image) {
+  var date = ee.Date(image.get('system:time_start'));
+  var yearOffset = date.difference(start, 'year'); // Calculate year difference
+  var ndvi = image.select('NDVI'); // Select the NDVI band
+
+  // Create the new image with constant, NDVI, and yearOffset bands
+  return ee.Image(1) // Add a constant band
+    .addBands(ndvi) // Add NDVI band
+    .addBands(ee.Image(yearOffset)) // Add yearOffset as a band
+    .float() // Ensure all bands are float type
+    .rename(['Constant', 'NDVI', 'yearOffset']) // Rename bands
+    .set('system:time_start', 
+      ee.Date(ee.Number(image.get('year')).format('%d').cat('-01-01')));
+});
+
+// Print to verify the result
+//print('Sentinel With Time:', sentinelWithTime);
+
+
+// ---------------------------------
+// 8. Calculate Theil-Sen regression
+// ---------------------------------
+
+// Apply sensSlope reducer to determine coefficients and offsets of Theil-Sen Regression
+var sensRegression = sentinelWithTime
+  .select('yearOffset', 'NDVI')
+  .reduce(ee.Reducer.sensSlope());
+
+print(sensRegression.clip(geometry))
+
+// Generate an image with latitude and longitude bands
+var latLon = ee.Image.pixelLonLat().clip(greenland);
+
+// Add latitude and longitude as bands to the original image
+var sensRegressionWithLatLon = sensRegression.addBands(latLon);
+
+print(sensRegressionWithLatLon.clip(geometry))
+
+// ----------------------------
+// 9. SAMPLE
+// ----------------------------
+
+var samples = sensRegressionWithLatLon.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+
+//print(samples.first())
+
+
+// Export the FeatureCollection to a CSV file
+Export.table.toDrive({
+  collection: samples,       // FeatureCollection to export
+  description: 'NDVIExportCoordinates', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
+///---------------------------
+//10. Test Significance slope
+///---------------------------
+var predictRegression = function(imageCollection, intercept, slope, regressionName){
+  return(
+    imageCollection.map(function(image){
+      var predictions = image.select('yearOffset').multiply(slope).add(intercept).rename(regressionName);
+      return image.addBands(predictions);
+  }));
+};
+
+// Add predicitons to the time series (a New value of NDVI according to time series)
+var sentinelWithTimeAndPredictions = predictRegression(sentinelWithTime, //imageCollection
+  sensRegression.select('offset'), //intercept
+  sensRegression.select('slope'), //slope
+  'sensPredictions'); //regressionName
+
+// SentinelWithTime previously had 3 bands--> one holding the year offset values, 
+//another one holding the NDVI values and another one holding the constant.
+//sentinelWithTimeAndPredictions adds another band with the prediction of NDVI according to the model
+  
+print('Sentinel with the NDVI predictions',sentinelWithTimeAndPredictions);
+
+// Add longitude and latitude
+
+var sentinelWithTimeAndPredictionsLatLon = sentinelWithTimeAndPredictions.map(function(img){
+  return img.addBands(latLon)
+})
+
+print( sentinelWithTimeAndPredictionsLatLon, 'sentinelWithTimeAndPredictionsLatLon')
+
+// Sample
+
+var samplesPredictions = sentinelWithTimeAndPredictionsLatLon.map(function(img){
+  var samples = img.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+return samples;
+}).flatten();
+
+print(samplesPredictions, 'samplesPredictions');
+
+// Export the FeatureCollection to a CSV file
+Export.table.toDrive({
+  collection: samplesPredictions,       // FeatureCollection to export
+  description: 'samplesPredictions', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
+///////////////-------------------------------------------////////////////////////////
+////////////////////-------------------- EVI--------------------/////////////////
+
+var addEVI = function(image) {
+  // Select the required bands (Red, Blue, NIR)
+  var red = image.select('B4');   // Band 4: Red
+  var blue = image.select('B2');  // Band 2: Blue
+  var nir = image.select('B8');   // Band 8: NIR (Near-Infrared)
+
+  // Calculate EVI using the formula
+  var EVI = nir.subtract(red).divide(nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(10000)).multiply(2.5)
+    .rename('EVI');  // Rename the band to 'EVI'
+
+  return image.addBands(EVI);  // Add the EVI band to the image
+};
+
+///--------------------------------------
+/// 6. Create annual composites with EVI
+///--------------------------------------
+
+
+var sentinelAnnual_evi = ee.ImageCollection.fromImages(
+  years.map(function (y) {
+
+    // Filter Sentinel-2 collection for the given year
+    return dataSentinelClear.filter(
+      ee.Filter.calendarRange(y, y, 'year'))
+     .map(addEVI) // Apply the addNDVI function to each image
+     .max() // Create an annual max composite and set properties
+     .set('year', y)
+     .set('system:time_start', 
+        ee.Date(ee.Number(y).format('%d').cat('-01-01')));
+}));
+
+
+// Print to verify result
+
+//print('Sentinel Annual', sentinelAnnual);
+
+///---------------------------------------------------------------------------
+// 7. Prepare annual composites for regression analysis--> create time difference
+///---------------------------------------------------------------------------
+
+var sentinelWithTime_evi = sentinelAnnual_evi.map(function(image) {
+  var date = ee.Date(image.get('system:time_start'));
+  var yearOffset = date.difference(start, 'year'); // Calculate year difference
+  var evi = image.select('EVI'); // Select the EVI band
+
+  // Create the new image with constant, NDVI, and yearOffset bands
+  return ee.Image(1) // Add a constant band
+    .addBands(evi) // Add EVI band
+    .addBands(ee.Image(yearOffset)) // Add yearOffset as a band
+    .float() // Ensure all bands are float type
+    .rename(['Constant', 'NDVI', 'yearOffset']) // Rename bands
+    .set('system:time_start', 
+      ee.Date(ee.Number(image.get('year')).format('%d').cat('-01-01')));
+});
+
+// Print to verify the result
+//print('Sentinel With Time:', sentinelWithTime);
+
+
+// ---------------------------------
+// 8. Calculate Theil-Sen regression
+// ---------------------------------
+
+// Apply sensSlope reducer to determine coefficients and offsets of Theil-Sen Regression
+var sensRegression_evi = sentinelWithTime_evi
+  .select('yearOffset', 'EVI')
+  .reduce(ee.Reducer.sensSlope());
+
+print(sensRegression_evi.clip(geometry))
+
+// Generate an image with latitude and longitude bands
+var latLon = ee.Image.pixelLonLat().clip(greenland);
+
+// Add latitude and longitude as bands to the original image
+var sensRegressionWithLatLon_evi = sensRegression_evi.addBands(latLon);
+
+print(sensRegressionWithLatLon_evi.clip(geometry))
+
+// ----------------------------
+// 9. SAMPLE
+// ----------------------------
+
+var samples_evi = sensRegressionWithLatLon_evi.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+
+//print(samples.first())
+
+
+// Export the FeatureCollection to a CSV file
+Export.table.toDrive({
+  collection: samples,       // FeatureCollection to export
+  description: 'eviExportCoordinates', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
+///---------------------------
+//10. Test Significance slope
+///---------------------------
+var predictRegression = function(imageCollection, intercept, slope, regressionName){
+  return(
+    imageCollection.map(function(image){
+      var predictions = image.select('yearOffset').multiply(slope).add(intercept).rename(regressionName);
+      return image.addBands(predictions);
+  }));
+};
+
+// Add predicitons to the time series (a New value of NDVI according to time series)
+var sentinelWithTimeAndPredictions_evi = predictRegression(sentinelWithTime_evi, //imageCollection
+  sensRegression.select('offset'), //intercept
+  sensRegression.select('slope'), //slope
+  'sensPredictions'); //regressionName
+
+/* SentinelWithTime previously had 3 bands--> one holding the year offset values, 
+another one holding the NDVI values and another one holding the constant.
+sentinelWithTimeAndPredictions adds another band with the prediction of NDVI according to the model*/
+  
+print('Sentinel with the EVI predictions',sentinelWithTimeAndPredictions_evi)
+
+// Add longitude and latitude
+
+var sentinelWithTimeAndPredictionsLatLon_evi = sentinelWithTimeAndPredictions_evi.map(function(img){
+  return img.addBands(latLon);
+});
+
+print( sentinelWithTimeAndPredictionsLatLon_evi, 'sentinelWithTimeAndPredictionsLatLon_evi');
+
+// Sample
+
+var samplesPredictions_evi = sentinelWithTimeAndPredictionsLatLon_evi.map(function(img){
+  var samples = img.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+return samples;
+}).flatten();
+print(samplesPredictions, 'samplesPredictions');
+
+// Export the FeatureCollection to a CSV file
+Export.table.toDrive({
+  collection: samplesPredictions_evi,       // FeatureCollection to export
+  description: 'samplesPredictions_evi', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
+///////////////-------------------------------------------////////////////////////////
+///////////////---------------ELEVATION-------------------//////////////////////////
+
+///--------------------------
+// 1. Import elevation model
+///--------------------------
+
+
+var arcticDEM = ee.Image("UMN/PGC/ArcticDEM/V3/2m_mosaic") //2 m resolution
+
+var elevationVis = {//visualization parameters --> work for both elevation models
+  min: -50.0,
+  max: 2000.0,
+  palette: ['0d13d8', '60e1ff', 'ffffff'],
+};
+
+///------------------------------
+// 2. Limit DEM to desireed area
+///------------------------------
+
+var arcticDEM_greenland = arcticDEM.clip(WestGreendland)
+
+
+print('arcticDEM_greenland', arcticDEM_greenland)
+
+///--------------------
+// 3. Select elevation
+///--------------------
+
+var elevation_artic = arcticDEM_greenland.select('elevation');//pixel size 2 m
+
+Map.addLayer(elevation_artic, elevationVis, 'Elevation Artic in Westgreendland');
+print('Elevation Artic', elevation_artic)
+
+///---------------------------------------------
+// 4. Compute terrain properties: aspect--ARTIC
+///---------------------------------------------
+
+var aspect = ee.Terrain.aspect(arcticDEM_greenland)
+
+// Define thresholds for north- and south-facing slopes artic
+var northFacing = aspect.gt(315).or(aspect.lte(45));
+var southFacing = aspect.gt(135).and(aspect.lte(225));
+var eastFacing = aspect.gt(45).and(aspect.lte(135));
+var westFacing = aspect.gt(225).and(aspect.lte(315));
+
+// Apply masks to create separate layers
+var northSlope = northFacing.updateMask(northFacing);
+var southSlope = southFacing.updateMask(southFacing);
+
+// Combine into a single band with integer values for each direction
+var facingDirection = northFacing.multiply(1) // North = 1
+  .add(southFacing.multiply(2))              // South = 2
+  .add(eastFacing.multiply(3))               // East = 3
+  .add(westFacing.multiply(4));              // West = 4
+
+
+///---------------------
+// 5. Define new images
+///---------------------
+
+var arcticDEM_greenland_complete = arcticDEM_greenland.addBands(facingDirection)
+var arcticDEM_greenland_aspect = arcticDEM_greenland_complete.select('aspect') // 1= north-facing
+
+print('arcticDEM_greenland_aspect', arcticDEM_greenland_aspect);
+print('arcticDEM_greenland_complete', arcticDEM_greenland_complete);
+
+Map.addLayer(arcticDEM_greenland_aspect, {palette: 'green'}, 'South-Facing Slopes select');
+Map.addLayer(southSlope, {palette: 'red'}, 'South-Facing Slopes');
+
+///--------------------------------------------
+// 6. Add longitude and latitude to each image
+///--------------------------------------------
+
+// Add latitude and longitude as bands to the original image
+
+var arcticDEM_greenland_aspectWithLatLon = arcticDEM_greenland_aspect.addBands(latLon);
+
+var elevation_articWithLatLon = elevation_artic.addBands(latLon);
+
+print('arcticDEM_greenland_aspectWithLatLon',arcticDEM_greenland_aspectWithLatLon)
+print('elevation_articWithLatLon',elevation_articWithLatLon)
+
+///---------
+//7. Sample
+///---------
+
+var samples_aspect = arcticDEM_greenland_aspectWithLatLon.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 200 // 10th Jan- change to 200 m tomake it coarser
+});
+
+var samples_elevation = elevation_articWithLatLon.sampleRegions({
+  collection:samplePoints, 
+  properties: ['SamplePoints'],
+  scale: 10
+});
+
+///-------------
+// 8. Export
+///-------------
+
+Export.table.toDrive({
+  collection: samples_aspect,       // FeatureCollection to export
+  description: 'AspectExportCoordinates', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
+Export.table.toDrive({
+  collection: samples_elevation,       // FeatureCollection to export
+  description: 'ElevationExportCoordinates', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
+///////////////-------------------------------------------////////////////////////////
+///////////////---------------DISTANCE TO SEA-------------------//////////////////////
+
+// Compute the border by subtracting the interior from the exterior
+// Assuming greenland is a FeatureCollection
+var greenlandGeometry = greenland.geometry(); // Convert FeatureCollection to Geometry
+
+Map.addLayer(greenlandGeometry.buffer(-10), {},'greenlandGeometry.buffer(-10)')
+
+// Create the border by using buffer and difference
+var greenlandBorder = greenlandGeometry.difference(greenlandGeometry.buffer(-10));
+print(greenlandBorder);
+Map.addLayer(greenlandBorder);
+
+// Function to calculate distance from a point to the greenland geometry
+var distanceToSea = function(feature) {
+  var pointGeometry = feature.geometry(); // Get the geometry of the feature
+  var distance = pointGeometry.distance(greenlandBorder); // Calculate distance to greenland
+  return feature.set('distance_to_sea', distance); // Add distance as a property
+};
+
+// Apply the function to the samplePoints FeatureCollection
+var distanceToSeaCollection = samplePoints.map(distanceToSea);
+
+Export.table.toDrive({
+  collection: distanceToSeaCollection,       // FeatureCollection to export
+  description: 'distanceToSeaCollection', // Task name in the Tasks tab
+  fileFormat: 'CSV'            // Output format (CSV)
+});
+
